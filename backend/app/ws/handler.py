@@ -102,6 +102,21 @@ async def websocket_endpoint(websocket: WebSocket):
                             "workspace": "canvas",
                             "payload": {"message": "Missing session_id"}
                         })
+                elif msg_type == "request_socratic_hint":
+                    project_id = payload_data.get("project_id", "")
+                    question_id = payload_data.get("question_id", "")
+                    question_text = payload_data.get("question_text", "")
+                    options = payload_data.get("options", [])
+                    selected_option = payload_data.get("selected_option", "")
+                    
+                    if project_id and question_id and question_text:
+                        asyncio.create_task(run_socratic_hint(websocket, user_id, project_id, question_id, question_text, options, selected_option, workspace))
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "workspace": workspace,
+                            "payload": {"message": "Missing project_id, question_id, or question_text"}
+                        })
                 else:
                     # Echo fallback
                     await websocket.send_json({
@@ -580,3 +595,70 @@ def _get_encoder():
         return _encoder_instance
     except Exception:
         return None
+
+
+async def run_socratic_hint(websocket: WebSocket, user_id: UUID, project_id: str, question_id: str, question_text: str, options: list, selected_option: str = "", workspace: str = "lms"):
+    """Fetches context, queries the LLM under a Socratic persona, and responds with a hint."""
+    logger.info(f"Generating Socratic Hint for question_id={question_id} (user_id={user_id})")
+    
+    # 1. Fetch RAG chunks
+    context_chunks = await _fetch_rag_chunks(project_id, question_text)
+    context_str = ""
+    if context_chunks:
+        context_str = "\n\n".join([
+            f"Reference [Source: {c.get('filename', 'Unknown')}, Page: {c.get('page_number', 1)}]:\n{c['content']}"
+            for c in context_chunks
+        ])
+    else:
+        context_str = "No specific reference documents found. Use general pedagogical knowledge on the topic."
+
+    # 2. Build Socratic prompt instructions
+    system_prompt = (
+        "You are an expert Socratic Tutor. Your job is to help a student answer a multiple-choice question "
+        "by guiding them with hints and conceptual questions. You must NOT directly reveal the correct answer "
+        "or mention the correct option letter/text.\n\n"
+        f"Question to Solve:\n\"{question_text}\"\n\n"
+        f"Available Options:\n" + "\n".join([f"- {opt}" for opt in options]) + "\n\n"
+        f"Student's Incorrect Attempt/Help Request:\n" + (f"The student chose the wrong answer: \"{selected_option}\"." if selected_option else "The student is stuck and requested a hint.") + "\n\n"
+        f"Pedagogical Reference Material:\n{context_str}\n\n"
+        "Guidelines:\n"
+        "1. Write a short, highly-supportive hint (max 2-3 sentences) addressed directly to the student.\n"
+        "2. Do NOT tell them the correct option or choice (e.g., do not say 'choose option B' or 'the answer is...').\n"
+        "3. Focus on the core concept from the reference material and ask them a guiding question that helps them self-correct."
+    )
+    
+    hint = "Failed to generate hint. Please try again."
+    try:
+        from app.database import async_session_maker
+        async with async_session_maker() as db:
+            from app.agents.graph import get_llm
+            llm = await get_llm(project_id, db=db)
+            
+            if llm:
+                # Invoke LLM
+                from langchain_core.prompts import ChatPromptTemplate
+                prompt = ChatPromptTemplate.from_messages([
+                    ("system", system_prompt),
+                    ("user", "Please generate the Socratic hint.")
+                ])
+                chain = prompt | llm
+                res = await chain.ainvoke({})
+                hint = res.content.strip()
+            else:
+                hint = "Socratic Tutor model configuration not found. Check your API settings."
+    except Exception as e:
+        logger.error(f"Socratic Hint generation failed: {e}", exc_info=True)
+        hint = f"Tutor Error: {str(e)[:100]}"
+        
+    # Send response back via WebSocket
+    try:
+        await websocket.send_json({
+            "type": "socratic_hint_response",
+            "workspace": workspace,
+            "payload": {
+                "question_id": question_id,
+                "hint": hint
+            }
+        })
+    except Exception as ws_err:
+        logger.error(f"Failed to send Socratic hint response: {ws_err}")

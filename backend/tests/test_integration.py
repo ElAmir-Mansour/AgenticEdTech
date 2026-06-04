@@ -413,6 +413,42 @@ class TestSimulations:
         assert "persona_results" in data
         assert isinstance(data["persona_results"], list)
 
+    def test_websocket_socratic_hint(self):
+        """Test Socratic hint generation over WebSocket."""
+        token = _state.get("token")
+        pid = _state.get("project_id")
+        if not token or not pid:
+            pytest.skip("No token or project created")
+            
+        from fastapi.testclient import TestClient
+        from app.main import app
+        
+        with TestClient(app) as client:
+            with client.websocket_connect(f"/ws?token={token}") as websocket:
+                # 1. Receive connection established message
+                conn_msg = websocket.receive_json()
+                assert conn_msg["type"] == "connection_established"
+                
+                # 2. Send request_socratic_hint
+                websocket.send_json({
+                    "type": "request_socratic_hint",
+                    "workspace": "lms",
+                    "payload": {
+                        "project_id": pid,
+                        "question_id": "test_q_123",
+                        "question_text": "What is Scrum?",
+                        "options": ["A framework", "A language", "A database"],
+                        "selected_option": "A language"
+                    }
+                })
+                
+                # 3. Receive socratic_hint_response
+                response = websocket.receive_json()
+                assert response["type"] == "socratic_hint_response"
+                assert response["payload"]["question_id"] == "test_q_123"
+                assert "hint" in response["payload"]
+                assert isinstance(response["payload"]["hint"], str)
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # PHASE 4: Export

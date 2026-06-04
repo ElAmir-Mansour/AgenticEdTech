@@ -2237,6 +2237,10 @@ struct LMSSimulatorView: View {
     @State private var showTelemetryConsole = false
     @State private var isPulsing = false
     
+    // Socratic Tutor State
+    @State private var socraticHints: [String: String] = [:]
+    @State private var hintLoadingStates: [String: Bool] = [:]
+    
     func logTelemetry(_ msg: String) {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss.SSS"
@@ -2376,6 +2380,16 @@ struct LMSSimulatorView: View {
         .sheet(item: $selectedCitation) { citation in
             if let projectId = modules.first?.projectId {
                 GroundingPreviewSheet(projectId: projectId, filename: citation.filename, page: citation.page)
+            }
+        }
+        .onReceive(WebSocketManager.shared.messagePublisher.receive(on: RunLoop.main)) { msg in
+            if msg.type == "socratic_hint_response" {
+                if let qId = msg.payload["question_id"]?.value as? String,
+                   let hint = msg.payload["hint"]?.value as? String {
+                    socraticHints[qId] = hint
+                    hintLoadingStates[qId] = false
+                    logTelemetry("[Socratic Tutor] Received hint for Q_ID: \(qId.prefix(8))...")
+                }
             }
         }
     }
@@ -2732,6 +2746,8 @@ extension LMSSimulatorView {
                 quizOptionsList(question: question, options: options)
             }
             
+            socraticTutorView(question: question)
+            
             if quizSubmitted {
                 explanationView(question: question)
             }
@@ -2959,6 +2975,99 @@ extension LMSSimulatorView {
             }
         }
         .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
+    }
+    
+    private func socraticTutorView(question: QuizQuestionResponse) -> some View {
+        let questionId = question.id
+        let hint = socraticHints[questionId]
+        let isLoading = hintLoadingStates[questionId] ?? false
+        
+        return VStack(alignment: .leading, spacing: Spacing.sm) {
+            HStack {
+                if isLoading {
+                    ProgressView()
+                        .tint(Color.brandLight)
+                        .scaleEffect(0.8)
+                    Text("Tutor is thinking...")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.brandLight)
+                } else if hint != nil {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.brandLight)
+                    Text("Socratic Hint")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color.brandLight)
+                    Spacer()
+                    Button(action: {
+                        withAnimation {
+                            socraticHints[questionId] = nil
+                        }
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button(action: {
+                        askSocraticTutor(question: question)
+                    }) {
+                        Label("Ask AI Tutor for Hint", systemImage: "sparkles")
+                            .font(.system(size: 11, weight: .bold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.brand.opacity(0.15))
+                            .foregroundStyle(Color.brandLight)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(Color.brand.opacity(0.3), lineWidth: 1))
+                    }
+                    .buttonStyle(ScaleButtonStyle())
+                }
+                Spacer()
+            }
+            .padding(.leading, 32)
+            
+            if let hintText = hint, !isLoading {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(hintText)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .lineSpacing(4)
+                }
+                .padding()
+                .background(Color.brand.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.brand.opacity(0.15), lineWidth: 1))
+                .padding(.leading, 32)
+                .transition(.opacity.combined(with: .slide))
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func askSocraticTutor(question: QuizQuestionResponse) {
+        guard let projectId = modules.first?.projectId else { return }
+        
+        let questionId = question.id
+        let questionText = question.questionText
+        let options = question.options ?? []
+        let selectedOption = selectedAnswers[questionId] ?? ""
+        
+        hintLoadingStates[questionId] = true
+        logTelemetry("[Socratic Tutor] Requesting hint for Q_ID: \(questionId.prefix(8))...")
+        
+        let clientMsg = ClientMessage(
+            type: "request_socratic_hint",
+            workspace: "lms",
+            payload: [
+                "project_id": AnyCodable(projectId),
+                "question_id": AnyCodable(questionId),
+                "question_text": AnyCodable(questionText),
+                "options": AnyCodable(options),
+                "selected_option": AnyCodable(selectedOption)
+            ]
+        )
+        WebSocketManager.shared.send(message: clientMsg)
     }
 }
 
