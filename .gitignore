@@ -1,0 +1,48 @@
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Gemini/Antigravity local files
+.gemini/
+
+# Python Virtual Environments & Packages
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Local databases & Credentials
+backend/.env
+backend/edtech.db
+backend/edtech.db-journal
+backend/edtech.db-shm
+backend/edtech.db-wal
+*.db
+*.sqlite
+
+# User Uploaded Documents
+backend/storage/
+storage/
+
+# iOS / Xcode build files
+*.xcuserstate
+xcuserdata/
+DerivedData/
+*.moved-aside
+*.ipa
+*.dSYM.zip
+*.dSYM/
+build/
+.swiftpm/
